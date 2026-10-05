@@ -1,0 +1,3 @@
+# Patches must keep their LF line endings to apply (Windows checkouts convert
+# text files to CRLF by default).
+*.patch -text
