@@ -71,8 +71,11 @@ jobs:
         shell: pwsh
         run: |
           $zip = "cabal-install-$env:CABAL_BOOTSTRAP_VERSION-x86_64-mingw64.zip"
-          $sums = (Invoke-WebRequest "https://downloads.haskell.org/~cabal/cabal-install-$env:CABAL_BOOTSTRAP_VERSION/SHA256SUMS").Content
-          $sha = ($sums -split "`n" | Where-Object { $_ -match [regex]::Escape($zip) } | Select-Object -First 1).Split(' ')[0]
+          # curl.exe: Invoke-WebRequest returns this file's content as bytes.
+          $sums = curl.exe -sSfL "https://downloads.haskell.org/~cabal/cabal-install-$env:CABAL_BOOTSTRAP_VERSION/SHA256SUMS"
+          $line = $sums | Where-Object { $_ -match [regex]::Escape($zip) } | Select-Object -First 1
+          if (-not $line) { throw "no SHA256SUMS entry for $zip" }
+          $sha = $line.Split(' ')[0]
           ./scripts/build-cabal-on-host.ps1 -Ghc $env:GHC -Work "$env:ROOT\cabal" `
             -CabalVersion $env:CABAL_BOOTSTRAP_VERSION -CabalSha256 $sha -BuildVersion $env:CABAL_BUILD_VERSION `
             -Hsc2hsArchive $env:HSC2HS_ARCHIVE -PatchesDir "$env:ROOT\patches" -Jobs 4
