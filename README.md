@@ -19,6 +19,13 @@ by cross-compiling from x86_64 Linux on branch `wip/windows-aarch64-native`
 - `rts/linker: load AArch64 COFF objects on Windows` (the RTS linker, needed
   for GHCi, `ghc -e` and Template Haskell)
 - `hadrian: build the cross-built target ghc with its interpreter`
+- `rts/linker: register PE exception tables on AArch64 too`
+- `rts/linker: resolve COFF LABEL symbols section-relative` (the `$L.text_1`
+  labels LLVM adds in large AArch64 sections)
+- `testsuite: don't read config.top as a regex replacement template` (test
+  driver only)
+
+Each release's notes say which of these it includes.
 
 ## Workflows
 
