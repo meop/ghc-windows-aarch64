@@ -64,26 +64,39 @@ Check "cabal get $Package" {
     # GHC's hsc2hs from the cabal-install project, and every stored patch
     # (windows-aarch64/patches, copied here by install-package-on-host.sh)
     # applied to a fresh copy of its package.
-    $local = @("$Package/", '../project/hsc2hs/')
+    $candidates = @()
     foreach ($patch in Get-ChildItem (Join-Path $root 'patches') -Filter '*.patch') {
         $pkg = $patch.BaseName
         Push-Location $project
         try { Invoke-Logged "cabal-get-$pkg" $cabal @('get', $pkg) | Out-Null } finally { Pop-Location }
         Push-Location (Join-Path $project $pkg)
         try { Invoke-Logged "patch-$pkg" 'git' @('apply', '-p1', $patch.FullName) | Out-Null } finally { Pop-Location }
-        $local += "$pkg/"
+        $candidates += $pkg
     }
-    @(
-        "packages: $($local -join ' ')"
-        "allow-newer: $AllowNewer"
-        'package hashable'
-        '  ghc-options: -package ghc-bignum'
-        # GHC master implicitly imports GHC.Essentials (from base) into every
-        # module; this shim package does not depend on base.
-        'package data-default-class'
-        '  ghc-options: -package base'
-    ) | Set-Content -Encoding utf8 (Join-Path $project 'cabal.project')
-    "local packages: $($local -join ', ')"
+    function Write-Project([string[]] $patchedDirs) {
+        @(
+            "packages: $Package/ ../project/hsc2hs/ $(($patchedDirs | ForEach-Object { "$_/" }) -join ' ')"
+            "allow-newer: $AllowNewer"
+            'package hashable'
+            '  ghc-options: -package ghc-bignum'
+            # GHC master implicitly imports GHC.Essentials (from base) into every
+            # module; this shim package does not depend on base.
+            'package data-default-class'
+            '  ghc-options: -package base'
+        ) | Set-Content -Encoding utf8 (Join-Path $project 'cabal.project')
+    }
+    # Plan without the patched copies first, then add only those the solver
+    # picks: a patched copy is a local package and would force its version.
+    Write-Project @()
+    Push-Location $project
+    try {
+        Invoke-Logged 'plan' $cabal @('build', ($Package -replace '-[0-9.]+$', ''), '--dry-run', "--with-compiler=$ghc") | Out-Null
+        $plan = Get-Content (Join-Path $project 'dist-newstyle\cache\plan.json') -Raw | ConvertFrom-Json
+    } finally { Pop-Location }
+    $inPlan = $plan.'install-plan' | ForEach-Object { "$($_.'pkg-name')-$($_.'pkg-version')" } | Sort-Object -Unique
+    $patched = @($candidates | Where-Object { $_ -in $inPlan })
+    Write-Project $patched
+    "patched (in the plan): $(if ($patched) { $patched -join ', ' } else { 'none' }); not needed: $(@($candidates | Where-Object { $_ -notin $patched }) -join ', ')"
 }
 
 Check "build $Package" {

@@ -100,25 +100,39 @@ Check "cabal get cabal-install-$BuildVersion" {
     try { Invoke-Logged 'cabal-get' $x64Cabal @('get', "cabal-install-$BuildVersion") | Out-Null } finally { Pop-Location }
     tar -xzf $Hsc2hsArchive -C (Join-Path $project 'hsc2hs')
     if ($LASTEXITCODE -ne 0) { throw "tar failed: $LASTEXITCODE" }
-    $patched = @()
+    # Unpack and patch every stored package, then use only those the solver
+    # actually picks: a patched copy is a local package, which would force its
+    # version (e.g. hadolint's Cabal 3.12 patch must not reach this build).
+    $candidates = @()
     foreach ($patch in Get-ChildItem $PatchesDir -Filter '*.patch') {
         $pkg = $patch.BaseName
         Push-Location $project
         try { Invoke-Logged "cabal-get-$pkg" $x64Cabal @('get', $pkg) | Out-Null } finally { Pop-Location }
         Push-Location (Join-Path $project $pkg)
         try { Invoke-Logged "patch-$pkg" 'git' @('apply', '-p1', $patch.FullName) | Out-Null } finally { Pop-Location }
-        $patched += "$pkg/"
+        $candidates += $pkg
     }
-    @(
-        "packages: cabal-install-$BuildVersion/ hsc2hs/ $($patched -join ' ')"
-        "allow-newer: $AllowNewer"
-        # tar 0.6 uses OsPath quasiquotes (0.6.4 also via directory-ospath-streaming);
-        # quasiquotes need Template Haskell, which needs the RTS linker (milestone 3).
-        'constraints: tar < 0.6'
-        'package hashable'
-        '  ghc-options: -package ghc-bignum'
-    ) | Set-Content -Encoding utf8 (Join-Path $project 'cabal.project')
-    "patched: $(if ($patched) { $patched -join ', ' } else { 'none' })"
+    function Write-Project([string[]] $patchedDirs) {
+        @(
+            "packages: cabal-install-$BuildVersion/ hsc2hs/ $(($patchedDirs | ForEach-Object { "$_/" }) -join ' ')"
+            "allow-newer: $AllowNewer"
+            # tar 0.6 uses OsPath quasiquotes (0.6.4 also via directory-ospath-streaming);
+            # quasiquotes need Template Haskell, which needs the RTS linker (milestone 3).
+            'constraints: tar < 0.6'
+            'package hashable'
+            '  ghc-options: -package ghc-bignum'
+        ) | Set-Content -Encoding utf8 (Join-Path $project 'cabal.project')
+    }
+    Write-Project @()
+    Push-Location $project
+    try {
+        Invoke-Logged 'plan' $x64Cabal @('build', 'exe:cabal', '--dry-run', "--with-compiler=$Ghc") | Out-Null
+        $plan = Get-Content (Join-Path $project 'dist-newstyle\cache\plan.json') -Raw | ConvertFrom-Json
+    } finally { Pop-Location }
+    $inPlan = $plan.'install-plan' | ForEach-Object { "$($_.'pkg-name')-$($_.'pkg-version')" } | Sort-Object -Unique
+    $patched = @($candidates | Where-Object { $_ -in $inPlan })
+    Write-Project $patched
+    "patched (in the plan): $(if ($patched) { $patched -join ', ' } else { 'none' }); not needed: $(@($candidates | Where-Object { $_ -notin $patched }) -join ', ')"
 }
 
 function Build-Cabal([string] $log, [string] $cabal, [string] $installDir) {
