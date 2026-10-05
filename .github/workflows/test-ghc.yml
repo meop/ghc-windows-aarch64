@@ -1,0 +1,39 @@
+name: test-ghc
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Release tag to test (default: the latest)
+        required: false
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download the GHC build
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ inputs.release || github.event.release.tag_name }}
+        run: |
+          $tag = if ($env:RELEASE) { $env:RELEASE } else { gh release view -R $env:GITHUB_REPOSITORY --json tagName --jq .tagName }
+          "release: $tag"
+          gh release download $tag -R $env:GITHUB_REPOSITORY -p '*.tar.gz' -p '*.sha256' -D "$env:RUNNER_TEMP\ghc"
+          Push-Location "$env:RUNNER_TEMP\ghc"
+          $file = Get-ChildItem *.tar.gz | Select-Object -First 1
+          $expected = (Get-Content *.sha256).Split(' ')[0]
+          $actual = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) { throw "sha256 $actual, expected $expected" }
+          "TARBALL=$($file.FullName)" >> $env:GITHUB_ENV
+
+      - name: Check GHC
+        shell: pwsh
+        run: ./scripts/test-ghc.ps1 -Tarball $env:TARBALL -Dest "$env:RUNNER_TEMP\install"
