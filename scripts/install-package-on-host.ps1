@@ -127,7 +127,7 @@ if ($Test) {
                 "-j$Jobs", '--test-show-details=direct'
             )
         } finally { Pop-Location }
-        ($out | Select-String -Pattern 'Test suite .* (passed|failed)|examples?, \d+ failures?|tests? passed|\d+ out of \d+ tests failed' |
+        ($out | Select-String -Pattern 'Test suite \S+: (PASS|FAIL)|examples?, \d+ failures?|\d+ of \d+ test suites|\d+ out of \d+ tests failed' |
             ForEach-Object { "$_".Trim() }) -join ' / '
     }
 }
