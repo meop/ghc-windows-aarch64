@@ -1,0 +1,15 @@
+Windows AArch64 uses the same C calling convention as x86_64 Windows, so
+ccall applies; without this, HsNetDef.h stops with "Unknown mingw32 arch".
+Not yet upstream (haskell/network).
+
+--- a/include/HsNetDef.h	2026-10-04 14:30:42.722555652 -0700
++++ b/include/HsNetDef.h	2026-10-04 14:30:42.726846872 -0700
+@@ -32,7 +32,7 @@
+ #if defined(mingw32_HOST_OS)
+ # if defined(i386_HOST_ARCH)
+ #  define CALLCONV stdcall
+-# elif defined(x86_64_HOST_ARCH)
++# elif defined(x86_64_HOST_ARCH) || defined(aarch64_HOST_ARCH)
+ #  define CALLCONV ccall
+ # else
+ #  error Unknown mingw32 arch

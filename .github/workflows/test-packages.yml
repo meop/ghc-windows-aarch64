@@ -1,0 +1,103 @@
+name: test-packages
+
+# Builds real Haskell packages natively with a release's GHC on Windows on Arm:
+# first cabal-install itself (an x64 cabal release drives that first build
+# under emulation), then each package with that native cabal, running the
+# package's own test suites.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Release tag to test (empty: the newest release, prereleases included)'
+        required: false
+      packages:
+        description: 'Hackage packages to build and test, space-separated'
+        required: false
+        default: 'ShellCheck-0.11.0 hadolint-2.15.1'
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  CABAL_BOOTSTRAP_VERSION: 3.18.2.0   # x64 cabal release that drives the first build
+  CABAL_BUILD_VERSION: 3.18.1.0       # cabal-install built from Hackage
+
+jobs:
+  packages:
+    runs-on: windows-11-arm
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download the GHC build and GHC's hsc2hs
+        id: release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ inputs.release || github.event.release.tag_name }}
+        run: |
+          # gh release view skips prereleases, and these builds are prereleases.
+          $tag = if ($env:RELEASE) { $env:RELEASE } else { gh release list -R $env:GITHUB_REPOSITORY --limit 1 --json tagName --jq '.[0].tagName' }
+          "release: $tag"
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          $dl = "$env:RUNNER_TEMP\release"
+          gh release download $tag -R $env:GITHUB_REPOSITORY -D $dl
+          Push-Location $dl
+          foreach ($sum in Get-ChildItem *.sha256) {
+            $expected, $name = (Get-Content $sum).Split(' ', [StringSplitOptions]::RemoveEmptyEntries)
+            $actual = (Get-FileHash $name -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $expected) { throw "$name sha256 $actual, expected $expected" }
+            "verified $name"
+          }
+          $root = Join-Path $env:LOCALAPPDATA 'ghc-windows-aarch64-test'
+          New-Item -ItemType Directory -Force "$root\install", "$root\patches" | Out-Null
+          tar -xzf (Get-ChildItem 'ghc-*.tar.gz').FullName -C "$root\install"
+          Copy-Item "$env:GITHUB_WORKSPACE\scripts\patches\*.patch" "$root\patches"
+          "ROOT=$root" >> $env:GITHUB_ENV
+          "GHC=$((Get-ChildItem "$root\install" -Directory | Select-Object -First 1).FullName)\bin\ghc.exe" >> $env:GITHUB_ENV
+          "HSC2HS_ARCHIVE=$((Get-ChildItem 'hsc2hs-*.tar.gz').FullName)" >> $env:GITHUB_ENV
+
+      - name: Cache the cabal store
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\ghc-windows-aarch64-test\cabal\cabal-dir
+          key: cabal-store-${{ steps.release.outputs.tag }}-${{ hashFiles('scripts/**') }}
+          restore-keys: cabal-store-${{ steps.release.outputs.tag }}-
+
+      - name: Build cabal-install natively
+        shell: pwsh
+        run: |
+          $zip = "cabal-install-$env:CABAL_BOOTSTRAP_VERSION-x86_64-mingw64.zip"
+          $sums = (Invoke-WebRequest "https://downloads.haskell.org/~cabal/cabal-install-$env:CABAL_BOOTSTRAP_VERSION/SHA256SUMS").Content
+          $sha = ($sums -split "`n" | Where-Object { $_ -match [regex]::Escape($zip) } | Select-Object -First 1).Split(' ')[0]
+          ./scripts/build-cabal-on-host.ps1 -Ghc $env:GHC -Work "$env:ROOT\cabal" `
+            -CabalVersion $env:CABAL_BOOTSTRAP_VERSION -CabalSha256 $sha -BuildVersion $env:CABAL_BUILD_VERSION `
+            -Hsc2hsArchive $env:HSC2HS_ARCHIVE -PatchesDir "$env:ROOT\patches" -Jobs 4
+
+      - name: Build and test packages
+        shell: pwsh
+        env:
+          PACKAGES: ${{ inputs.packages || 'ShellCheck-0.11.0 hadolint-2.15.1' }}
+        run: |
+          $failed = @()
+          foreach ($pkg in $env:PACKAGES.Split(' ', [StringSplitOptions]::RemoveEmptyEntries)) {
+            "::group::$pkg"
+            ./scripts/install-package-on-host.ps1 -Package $pkg -Test -Jobs 4
+            if ($LASTEXITCODE -ne 0) { $failed += $pkg }
+            "::endgroup::"
+          }
+          if ($failed) { throw "failed: $($failed -join ', ')" }
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: |
+            ~\AppData\Local\ghc-windows-aarch64-test\cabal\logs
+            ~\AppData\Local\ghc-windows-aarch64-test\cabal\pkg-*\logs
+            ~\AppData\Local\ghc-windows-aarch64-test\cabal\cabal-dir\logs
+          if-no-files-found: ignore

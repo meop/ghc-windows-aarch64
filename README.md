@@ -26,6 +26,17 @@ by cross-compiling from x86_64 Linux on branch `wip/windows-aarch64-native`
   builds working programs: hello world, `text`/`bytestring`/`containers`,
   `-threaded`, C FFI, `ghc -e`, Template Haskell, and a quasiquoter.
 
+- `test-packages.yml`: builds cabal-install natively with the release's GHC
+  (an x64 cabal release drives that first build under emulation), then builds
+  real packages with that native cabal and runs their test suites (default:
+  ShellCheck and hadolint).
+
+The scripts in `scripts/` are copies from the GHC branch's
+`windows-aarch64/` directory, which is where they are maintained. Releases
+also carry the hsc2hs source from GHC's tree: the Hackage release of hsc2hs
+does not yet support Windows AArch64. `scripts/patches/` holds the package
+patches the build needs, with the reason in each.
+
 ## Licenses
 
 GHC is under a BSD-style license (`LICENSE` in the bindist). The bundled
