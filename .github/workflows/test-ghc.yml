@@ -27,7 +27,7 @@ jobs:
           # gh release view skips prereleases, and these builds are prereleases.
           $tag = if ($env:RELEASE) { $env:RELEASE } else { gh release list -R $env:GITHUB_REPOSITORY --limit 1 --json tagName --jq '.[0].tagName' }
           "release: $tag"
-          gh release download $tag -R $env:GITHUB_REPOSITORY -p 'ghc-*.tar.gz' -p 'ghc-*.sha256' -D "$env:RUNNER_TEMP\ghc"
+          gh release download $tag -R $env:GITHUB_REPOSITORY -p 'ghc-*-aarch64-unknown-mingw32.tar.gz' -p 'ghc-*-aarch64-unknown-mingw32.tar.gz.sha256' -D "$env:RUNNER_TEMP\ghc"
           Push-Location "$env:RUNNER_TEMP\ghc"
           $file = Get-ChildItem *.tar.gz | Select-Object -First 1
           $expected = (Get-Content *.sha256).Split(' ')[0]

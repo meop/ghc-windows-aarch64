@@ -1,0 +1,94 @@
+name: test-testsuite
+
+# Runs GHC's own testsuite (the make driver) natively against a release's GHC,
+# from the GHC source tree the release was built from (its ghc-src asset).
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Release tag to test (empty: the newest release, prereleases included)'
+        required: false
+      speed:
+        description: 'Testsuite speed: 2 fast, 1 normal, 0 slow'
+        required: false
+        default: '2'
+      tests:
+        description: 'Run only these tests, space-separated (empty: all)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  testsuite:
+    runs-on: windows-11-arm
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download the GHC build and its source
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ inputs.release }}
+        run: |
+          # gh release view skips prereleases, and these builds are prereleases.
+          $tag = if ($env:RELEASE) { $env:RELEASE } else { gh release list -R $env:GITHUB_REPOSITORY --limit 1 --json tagName --jq '.[0].tagName' }
+          "release: $tag"
+          $dl = "$env:RUNNER_TEMP\release"
+          gh release download $tag -R $env:GITHUB_REPOSITORY -D $dl -p 'ghc-*-aarch64-unknown-mingw32.tar.gz*' -p 'ghc-src-*'
+          Push-Location $dl
+          foreach ($sum in Get-ChildItem *.sha256) {
+            $expected, $name = (Get-Content $sum).Split(' ', [StringSplitOptions]::RemoveEmptyEntries)
+            $actual = (Get-FileHash $name -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $expected) { throw "$name sha256 $actual, expected $expected" }
+            "verified $name"
+          }
+          $root = Join-Path $env:LOCALAPPDATA 'ghc-windows-aarch64-test'
+          New-Item -ItemType Directory -Force "$root\install" | Out-Null
+          tar -xzf (Get-ChildItem 'ghc-*-aarch64-unknown-mingw32.tar.gz').FullName -C "$root\install"
+          "SRC_ARCHIVE=$((Get-ChildItem 'ghc-src-*.tar.gz').FullName)" >> $env:GITHUB_ENV
+
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: MSYS
+          update: false
+          install: make
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Run the testsuite
+        shell: pwsh
+        env:
+          SPEED: ${{ inputs.speed || '2' }}
+          TESTS: ${{ inputs.tests }}
+        run: |
+          ./scripts/testsuite-on-host.ps1 -Archive $env:SRC_ARCHIVE -Work "$env:RUNNER_TEMP\testsuite" `
+            -Msys2 '${{ steps.msys2.outputs.msys2-location }}' -Speed $env:SPEED -Threads 4 -Only $env:TESTS
+          Get-Content "$env:RUNNER_TEMP\testsuite\logs\state.txt"
+
+      - name: Summary
+        if: always()
+        shell: pwsh
+        run: |
+          $logs = "$env:RUNNER_TEMP\testsuite\logs"
+          $summary = Join-Path $logs 'summary.txt'
+          if (Test-Path $summary) {
+            '```' >> $env:GITHUB_STEP_SUMMARY
+            Get-Content $summary | Select-Object -Last 20 >> $env:GITHUB_STEP_SUMMARY
+            '```' >> $env:GITHUB_STEP_SUMMARY
+            Get-Content $summary | Select-Object -Last 20
+          }
+          $state = Get-Content (Join-Path $logs 'state.txt') -ErrorAction SilentlyContinue
+          if (-not ($state -match 'finished: make exit 0')) { throw "testsuite did not pass cleanly: $($state | Select-Object -Last 1)" }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: testsuite-logs
+          path: ${{ runner.temp }}/testsuite/logs

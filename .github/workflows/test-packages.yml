@@ -54,7 +54,7 @@ jobs:
           }
           $root = Join-Path $env:LOCALAPPDATA 'ghc-windows-aarch64-test'
           New-Item -ItemType Directory -Force "$root\install", "$root\patches" | Out-Null
-          tar -xzf (Get-ChildItem 'ghc-*.tar.gz').FullName -C "$root\install"
+          tar -xzf (Get-ChildItem 'ghc-*-aarch64-unknown-mingw32.tar.gz').FullName -C "$root\install"
           Copy-Item "$env:GITHUB_WORKSPACE\scripts\patches\*.patch" "$root\patches"
           "ROOT=$root" >> $env:GITHUB_ENV
           "GHC=$((Get-ChildItem "$root\install" -Directory | Select-Object -First 1).FullName)\bin\ghc.exe" >> $env:GITHUB_ENV

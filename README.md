@@ -38,6 +38,10 @@ Each release's notes say which of these it includes.
   real packages with that native cabal and runs their test suites (default:
   ShellCheck and hadolint).
 
+- `test-testsuite.yml` (manual): runs GHC's own testsuite with the make
+  driver against a release's GHC, from the source tree it was built from (the
+  release's `ghc-src-<commit>.tar.gz`). The fast speed takes about 2.5 hours.
+
 The scripts in `scripts/` are copies from the GHC branch's
 `windows-aarch64/` directory, which is where they are maintained. Releases
 also carry the hsc2hs source from GHC's tree: the Hackage release of hsc2hs
