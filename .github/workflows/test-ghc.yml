@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: Release tag to test (default: the latest)
+        description: 'Release tag to test (empty: the newest release, prereleases included)'
         required: false
   release:
     types: [published]
@@ -24,7 +24,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE: ${{ inputs.release || github.event.release.tag_name }}
         run: |
-          $tag = if ($env:RELEASE) { $env:RELEASE } else { gh release view -R $env:GITHUB_REPOSITORY --json tagName --jq .tagName }
+          # gh release view skips prereleases, and these builds are prereleases.
+          $tag = if ($env:RELEASE) { $env:RELEASE } else { gh release list -R $env:GITHUB_REPOSITORY --limit 1 --json tagName --jq '.[0].tagName' }
           "release: $tag"
           gh release download $tag -R $env:GITHUB_REPOSITORY -p '*.tar.gz' -p '*.sha256' -D "$env:RUNNER_TEMP\ghc"
           Push-Location "$env:RUNNER_TEMP\ghc"
