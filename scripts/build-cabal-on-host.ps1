@@ -123,7 +123,10 @@ Check "cabal get cabal-install-$BuildVersion" {
             '  ghc-options: -package ghc-bignum'
         ) | Set-Content -Encoding utf8 (Join-Path $project 'cabal.project')
     }
-    Write-Project @()
+    # Plan with the patched candidates as local packages: a local package
+    # pins its version, so the solver cannot drift onto a newer Hackage
+    # release (e.g. network 3.2.13) that the stored patch does not cover.
+    Write-Project $candidates
     Push-Location $project
     try {
         Invoke-Logged 'plan' $x64Cabal @('build', 'exe:cabal', '--dry-run', "--with-compiler=$Ghc") | Out-Null
