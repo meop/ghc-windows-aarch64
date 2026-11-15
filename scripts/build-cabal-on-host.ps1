@@ -100,18 +100,12 @@ Check "cabal get cabal-install-$BuildVersion" {
     try { Invoke-Logged 'cabal-get' $x64Cabal @('get', "cabal-install-$BuildVersion") | Out-Null } finally { Pop-Location }
     tar -xzf $Hsc2hsArchive -C (Join-Path $project 'hsc2hs')
     if ($LASTEXITCODE -ne 0) { throw "tar failed: $LASTEXITCODE" }
-    # Unpack and patch every stored package, then use only those the solver
-    # actually picks: a patched copy is a local package, which would force its
-    # version (e.g. hadolint's Cabal 3.12 patch must not reach this build).
-    $candidates = @()
-    foreach ($patch in Get-ChildItem $PatchesDir -Filter '*.patch') {
-        $pkg = $patch.BaseName
-        Push-Location $project
-        try { Invoke-Logged "cabal-get-$pkg" $x64Cabal @('get', $pkg) | Out-Null } finally { Pop-Location }
-        Push-Location (Join-Path $project $pkg)
-        try { Invoke-Logged "patch-$pkg" 'git' @('apply', '-p1', $patch.FullName) | Out-Null } finally { Pop-Location }
-        $candidates += $pkg
-    }
+    # Stored patches are per package, not per version: the solver picks the
+    # newest Hackage version, and a patch must apply to whichever that is
+    # (network 3.2.13 replaced 3.2.9 this way). So: plan first, then unpack
+    # and patch the picked version of each patched package, and only if that
+    # package is in the plan at all (the Cabal 3.12 patch is for hadolint's
+    # build and must not reach this one).
     function Write-Project([string[]] $patchedDirs) {
         @(
             "packages: cabal-install-$BuildVersion/ hsc2hs/ $(($patchedDirs | ForEach-Object { "$_/" }) -join ' ')"
@@ -123,19 +117,30 @@ Check "cabal get cabal-install-$BuildVersion" {
             '  ghc-options: -package ghc-bignum'
         ) | Set-Content -Encoding utf8 (Join-Path $project 'cabal.project')
     }
-    # Plan with the patched candidates as local packages: a local package
-    # pins its version, so the solver cannot drift onto a newer Hackage
-    # release (e.g. network 3.2.13) that the stored patch does not cover.
-    Write-Project $candidates
+    Write-Project @()
     Push-Location $project
     try {
         Invoke-Logged 'plan' $x64Cabal @('build', 'exe:cabal', '--dry-run', "--with-compiler=$Ghc") | Out-Null
         $plan = Get-Content (Join-Path $project 'dist-newstyle\cache\plan.json') -Raw | ConvertFrom-Json
     } finally { Pop-Location }
-    $inPlan = $plan.'install-plan' | ForEach-Object { "$($_.'pkg-name')-$($_.'pkg-version')" } | Sort-Object -Unique
-    $patched = @($candidates | Where-Object { $_ -in $inPlan })
+    $inPlan = @{}
+    $plan.'install-plan' | ForEach-Object { $inPlan[$_.'pkg-name'] = $_.'pkg-version' }
+    $patched = @()
+    foreach ($patch in Get-ChildItem $PatchesDir -Filter '*.patch') {
+        $name = $patch.BaseName -replace '-[0-9.]+$', ''
+        if (-not $inPlan.ContainsKey($name)) {
+            "patched: $name is not in the plan; skipped"
+            continue
+        }
+        $pkg = "$name-$($inPlan[$name])"
+        Push-Location $project
+        try { Invoke-Logged "cabal-get-$pkg" $x64Cabal @('get', $pkg) | Out-Null } finally { Pop-Location }
+        Push-Location (Join-Path $project $pkg)
+        try { Invoke-Logged "patch-$pkg" 'git' @('apply', '-p1', $patch.FullName) | Out-Null } finally { Pop-Location }
+        $patched += $pkg
+    }
     Write-Project $patched
-    "patched (in the plan): $(if ($patched) { $patched -join ', ' } else { 'none' }); not needed: $(@($candidates | Where-Object { $_ -notin $patched }) -join ', ')"
+    "patched (in the plan): $(if ($patched) { $patched -join ', ' } else { 'none' })"
 }
 
 function Build-Cabal([string] $log, [string] $cabal, [string] $installDir) {
