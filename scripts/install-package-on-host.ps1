@@ -83,12 +83,6 @@ Check "cabal get $Package" {
             # module; this shim package does not depend on base.
             'package data-default-class'
             '  ghc-options: -package base'
-            # GHC master 2026-11 turns noncanonical instance definitions into
-            # errors; older Hackage releases still define mappend/return.
-            'package strict'
-            '  ghc-options: -Wno-noncanonical-monoid-instances'
-            'package blaze-html'
-            '  ghc-options: -Wno-noncanonical-monad-instances'
         ) | Set-Content -Encoding utf8 (Join-Path $project 'cabal.project')
     }
     # Plan without the patched copies first, then add only those the solver

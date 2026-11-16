@@ -1,0 +1,13 @@
+diff --git a/src/Text/Blaze/Internal.hs b/src/Text/Blaze/Internal.hs
+index b98f3e8..fbb012e 100644
+--- a/src/Text/Blaze/Internal.hs
++++ b/src/Text/Blaze/Internal.hs
+@@ -220,8 +220,6 @@ instance Applicative MarkupM where
+     -- {-# INLINE (<*) #-}
+ 
+ instance Monad MarkupM where
+-    return x = Empty x
+-    {-# INLINE return #-}
+     (>>) = Append
+     {-# INLINE (>>) #-}
+     h1 >>= f = Append h1 (f (markupValue h1))
