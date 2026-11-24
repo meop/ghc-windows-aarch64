@@ -1,18 +1,26 @@
 name: test-testsuite
 
 # Runs GHC's own testsuite (the make driver) natively against a release's GHC,
-# from the GHC source tree the release was built from (its ghc-src asset).
+# with the release's own test tree (testsuite-<hash>-libs.tar.gz) and test tools
+# (testsuite-tools-<hash>.zip). The runner (scripts/testsuite-on-host.ps1) checks that
+# the compiler and the test tree are the commits the release names. At -Speed 1 and
+# 3 threads a full run took 2 h 45 min on a 4 vCPU / 10 GB Windows 11 ARM64 VM
+# (T43); the job limit is 6 hours.
 
 on:
   workflow_dispatch:
     inputs:
       release:
-        description: 'Release tag to test (empty: the newest release, prereleases included)'
+        description: 'Release tag to test (empty: the newest release, prereleases included). It needs testsuite-*-libs.tar.gz and testsuite-tools-*.zip assets and must end in the compiler commit, as ghc-10.1.20261114-9b46c83fd6'
         required: false
       speed:
         description: 'Testsuite speed: 2 fast, 1 normal, 0 slow'
         required: false
-        default: '2'
+        default: '1'
+      threads:
+        description: 'Tests run at once (the T43 run used 3 on a 4 CPU host)'
+        required: false
+        default: '3'
       tests:
         description: 'Run only these tests, space-separated (empty: all)'
         required: false
@@ -28,7 +36,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Download the GHC build and its source
+      - name: Machine
+        shell: pwsh
+        run: |
+          # The runner refuses to start below 15 GB free; this records what the runner image has.
+          Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{n='UsedGB';e={[math]::Round($_.Used/1GB,1)}}, @{n='FreeGB';e={[math]::Round($_.Free/1GB,1)}}
+          "processors: $env:NUMBER_OF_PROCESSORS $env:PROCESSOR_ARCHITECTURE"
+          $os = Get-CimInstance Win32_OperatingSystem
+          "memory: $([math]::Round($os.TotalVisibleMemorySize/1MB,1)) GB total, $([math]::Round($os.FreePhysicalMemory/1MB,1)) GB free"
+
+      - name: Download the GHC build, test tree and test tools
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -38,7 +55,9 @@ jobs:
           $tag = if ($env:RELEASE) { $env:RELEASE } else { gh release list -R $env:GITHUB_REPOSITORY --limit 1 --json tagName --jq '.[0].tagName' }
           "release: $tag"
           $dl = "$env:RUNNER_TEMP\release"
-          gh release download $tag -R $env:GITHUB_REPOSITORY -D $dl -p 'ghc-*-aarch64-unknown-mingw32.tar.gz*' -p 'ghc-src-*'
+          gh release download $tag -R $env:GITHUB_REPOSITORY -D $dl `
+            -p 'ghc-*-aarch64-unknown-mingw32.tar.gz*' -p 'testsuite-*-libs.tar.gz*' -p 'testsuite-tools-*.zip*'
+          if ($LASTEXITCODE -ne 0) { throw "gh release download failed: $LASTEXITCODE" }
           Push-Location $dl
           foreach ($sum in Get-ChildItem *.sha256) {
             $expected, $name = (Get-Content $sum).Split(' ', [StringSplitOptions]::RemoveEmptyEntries)
@@ -46,11 +65,34 @@ jobs:
             if ($actual -ne $expected) { throw "$name sha256 $actual, expected $expected" }
             "verified $name"
           }
-          $root = Join-Path $env:LOCALAPPDATA 'ghc-windows-aarch64-test'
-          New-Item -ItemType Directory -Force "$root\install" | Out-Null
-          tar -xzf (Get-ChildItem 'ghc-*-aarch64-unknown-mingw32.tar.gz').FullName -C "$root\install"
-          "SRC_ARCHIVE=$((Get-ChildItem 'ghc-src-*.tar.gz').FullName)" >> $env:GITHUB_ENV
+          function One([string] $filter) {
+            $f = @(Get-ChildItem $filter | Where-Object { $_.Name -notlike '*.sha256' })
+            if ($f.Count -ne 1) { throw "release $tag has $($f.Count) assets matching $filter, expected 1" }
+            $f[0]
+          }
+          $bindist = One 'ghc-*-aarch64-unknown-mingw32.tar.gz'
+          $tree = One 'testsuite-*-libs.tar.gz'
+          $tools = One 'testsuite-tools-*.zip'
+          # The commits the runner checks: the compiler's is the tag's last part, the tree's is in its file name.
+          # (The tools zip carries the commit of the compiler it was built with, which can differ; it is not checked.)
+          if ($tag -notmatch '-([0-9a-f]{7,40})$') { throw "release tag '$tag' does not end in a commit id" }
+          $expectGhc = $Matches[1]
+          if ($tree.Name -notmatch '^testsuite-([0-9a-f]{7,40})-libs\.tar\.gz$') { throw "cannot read a commit id from $($tree.Name)" }
+          $expectTree = $Matches[1]
+          $install = "$env:RUNNER_TEMP\install"
+          New-Item -ItemType Directory -Force $install | Out-Null
+          & "$env:SystemRoot\System32\tar.exe" -xzf $bindist.FullName -C $install
+          if ($LASTEXITCODE -ne 0) { throw "tar failed: $LASTEXITCODE" }
+          $ghc = @(Get-ChildItem $install -Directory -Filter 'ghc-*')
+          if ($ghc.Count -ne 1) { throw "expected one ghc-* directory in the bindist, found $($ghc.Count)" }
+          "GHC=$($ghc[0].FullName)\bin\ghc.exe" >> $env:GITHUB_ENV
+          "TREE_ARCHIVE=$($tree.FullName)" >> $env:GITHUB_ENV
+          "TOOLS_ZIP=$($tools.FullName)" >> $env:GITHUB_ENV
+          "EXPECT_GHC=$expectGhc" >> $env:GITHUB_ENV
+          "EXPECT_TREE=$expectTree" >> $env:GITHUB_ENV
+          "compiler $($ghc[0].Name) (expect $expectGhc); test tree $($tree.Name) (expect $expectTree); tools $($tools.Name)"
 
+      # MSYS2 provides the make and sh the testsuite driver needs (an x86_64 environment, run under emulation).
       - uses: msys2/setup-msys2@v2
         id: msys2
         with:
@@ -58,6 +100,8 @@ jobs:
           update: false
           install: make
 
+      # A native ARM64 python. The runner copies its python.exe as python3.exe and python.exe for the test shell, and
+      # a copy finds python313.dll through PATH, where setup-python puts the install directory.
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
@@ -65,12 +109,19 @@ jobs:
       - name: Run the testsuite
         shell: pwsh
         env:
-          SPEED: ${{ inputs.speed || '2' }}
+          SPEED: ${{ inputs.speed || '1' }}
+          THREADS: ${{ inputs.threads || '3' }}
           TESTS: ${{ inputs.tests }}
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: |
-          ./scripts/testsuite-on-host.ps1 -Archive $env:SRC_ARCHIVE -Work "$env:RUNNER_TEMP\testsuite" `
-            -Msys2 '${{ steps.msys2.outputs.msys2-location }}' -Speed $env:SPEED -Threads 4 -Only $env:TESTS
-          Get-Content "$env:RUNNER_TEMP\testsuite\logs\state.txt"
+          $python = Join-Path $env:pythonLocation 'python.exe'
+          if (-not (Test-Path $python)) { throw "no python.exe in $env:pythonLocation" }
+          # The runner's defaults apply: 4096 MB per-process memory cap, iserv sweep, timeline.
+          ./scripts/testsuite-on-host.ps1 -Archive $env:TREE_ARCHIVE -Tools $env:TOOLS_ZIP `
+            -Work "$env:RUNNER_TEMP\testsuite" -Msys2 $env:MSYS2_LOCATION -Python $python -Ghc $env:GHC `
+            -Speed ([int] $env:SPEED) -Threads ([int] $env:THREADS) `
+            -ExpectTree $env:EXPECT_TREE -ExpectGhc $env:EXPECT_GHC -Only $env:TESTS
+          # make exits 2 when a test fails; that fails this step, and the summary step says which.
 
       - name: Summary
         if: always()
@@ -84,11 +135,32 @@ jobs:
             '```' >> $env:GITHUB_STEP_SUMMARY
             Get-Content $summary | Select-Object -Last 20
           }
-          $state = Get-Content (Join-Path $logs 'state.txt') -ErrorAction SilentlyContinue
+          $state = @(Get-Content (Join-Path $logs 'state.txt') -ErrorAction SilentlyContinue)
+          $state | Where-Object { $_ -match 'finished:|memory-cap:|iserv-sweep: run total|peak commit' } | Select-Object -Last 8
           if (-not ($state -match 'finished: make exit 0')) { throw "testsuite did not pass cleanly: $($state | Select-Object -Last 1)" }
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload results
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: testsuite-logs
-          path: ${{ runner.temp }}/testsuite/logs
+          name: testsuite-results
+          path: |
+            ${{ runner.temp }}/testsuite/logs/junit.xml
+            ${{ runner.temp }}/testsuite/logs/summary.txt
+            ${{ runner.temp }}/testsuite/logs/state.txt
+            ${{ runner.temp }}/testsuite/logs/timeline.tsv
+            ${{ runner.temp }}/testsuite/logs/perf-metrics*.tsv
+          if-no-files-found: warn
+
+      # testsuite.log is long (the timeline needs -v3); kept apart so the results above stay small.
+      - name: Upload the full log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testsuite-log
+          path: |
+            ${{ runner.temp }}/testsuite/logs/testsuite.log
+            ${{ runner.temp }}/testsuite/logs/run-make.sh
+            ${{ runner.temp }}/testsuite/logs/shell-check.sh
+          retention-days: 14
+          if-no-files-found: ignore
