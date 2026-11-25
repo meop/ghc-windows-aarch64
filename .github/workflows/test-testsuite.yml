@@ -92,13 +92,14 @@ jobs:
           "EXPECT_TREE=$expectTree" >> $env:GITHUB_ENV
           "compiler $($ghc[0].Name) (expect $expectGhc); test tree $($tree.Name) (expect $expectTree); tools $($tools.Name)"
 
-      # MSYS2 provides the make and sh the testsuite driver needs (an x86_64 environment, run under emulation).
+      # MSYS2 provides the make, sh and perl the testsuite driver needs (an x86_64 environment, run under
+      # emulation). The hpc tests run hpcrun.pl with the perl found on PATH, and it must be MSYS2's.
       - uses: msys2/setup-msys2@v2
         id: msys2
         with:
           msystem: MSYS
           update: false
-          install: make
+          install: make perl
 
       # A native ARM64 python. The runner copies its python.exe as python3.exe and python.exe for the test shell, and
       # a copy finds python313.dll through PATH, where setup-python puts the install directory.
@@ -116,6 +117,10 @@ jobs:
         run: |
           $python = Join-Path $env:pythonLocation 'python.exe'
           if (-not (Test-Path $python)) { throw "no python.exe in $env:pythonLocation" }
+          # The image puts an x64 MinGW (C:\mingw64\bin) and Strawberry Perl on PATH. The testsuite driver appends
+          # the compiler's own mingw\bin to PATH, so an x64 nm or cc found earlier wins (T11155, T27072), and
+          # Strawberry's native perl can run hpcrun.pl before MSYS2's (hpc001, tough, tough2). Drop both.
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -and $_ -notmatch '^C:\\(mingw64|Strawberry)\\' }) -join ';'
           # The runner's defaults apply: 4096 MB per-process memory cap, iserv sweep, timeline.
           ./scripts/testsuite-on-host.ps1 -Archive $env:TREE_ARCHIVE -Tools $env:TOOLS_ZIP `
             -Work "$env:RUNNER_TEMP\testsuite" -Msys2 $env:MSYS2_LOCATION -Python $python -Ghc $env:GHC `
