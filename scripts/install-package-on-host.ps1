@@ -5,6 +5,7 @@
 param(
     [Parameter(Mandatory)] [string] $Package,   # e.g. ShellCheck-0.11.0
     [string[]] $VersionArgs = @('--version'),
+    [string] $SourceDir,                        # build this checkout of $Package instead of `cabal get`-ing it from Hackage
     [switch] $Test,                             # also build and run its test suites
     [string] $AllowNewer = 'base,ghc-prim,ghc-bignum,template-haskell,containers,time,deepseq,bytestring,text,directory,filepath,process,Win32,array,os-string,file-io,stm,mtl,transformers,parsec,exceptions,binary,semaphore-compat',
     [int] $Jobs = 2
@@ -60,7 +61,14 @@ New-Item -ItemType Directory -Force $project, $bin, $logs | Out-Null
 
 Check "cabal get $Package" {
     Push-Location $project
-    try { Invoke-Logged 'cabal-get' $cabal @('get', $Package) | Out-Null } finally { Pop-Location }
+    try {
+        if ($SourceDir) {
+            Copy-Item -Recurse $SourceDir (Join-Path $project $Package)
+            Remove-Item -Recurse -Force (Join-Path $project "$Package\.git") -ErrorAction SilentlyContinue
+        } else {
+            Invoke-Logged 'cabal-get' $cabal @('get', $Package) | Out-Null
+        }
+    } finally { Pop-Location }
     # GHC's hsc2hs from the cabal-install project, and every stored patch
     # (windows-aarch64/patches, copied here by install-package-on-host.sh)
     # applied to a fresh copy of its package.

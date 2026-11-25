@@ -15,6 +15,12 @@ on:
         description: 'Hackage packages to build and test, space-separated'
         required: false
         default: 'ShellCheck-0.11.0 hadolint-2.15.1'
+      hadolint-repo:
+        description: 'GitHub repo to build hadolint from instead of Hackage, e.g. meop/hadolint (empty: Hackage). Drops the Cabal 3.12.1.0 patch.'
+        required: false
+      hadolint-ref:
+        description: 'Commit or branch of hadolint-repo'
+        required: false
   release:
     types: [published]
 
@@ -32,12 +38,21 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Check out hadolint
+        if: inputs.hadolint-repo != ''
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ inputs.hadolint-repo }}
+          ref: ${{ inputs.hadolint-ref }}
+          path: hadolint-src
+
       - name: Download the GHC build and GHC's hsc2hs
         id: release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE: ${{ inputs.release || github.event.release.tag_name }}
+          HADOLINT_REPO: ${{ inputs.hadolint-repo }}
         run: |
           # gh release view skips prereleases, and these builds are prereleases.
           $tag = if ($env:RELEASE) { $env:RELEASE } else { gh release list -R $env:GITHUB_REPOSITORY --limit 1 --json tagName --jq '.[0].tagName' }
@@ -56,6 +71,8 @@ jobs:
           New-Item -ItemType Directory -Force "$root\install", "$root\patches" | Out-Null
           tar -xzf (Get-ChildItem 'ghc-*-aarch64-unknown-mingw32.tar.gz').FullName -C "$root\install"
           Copy-Item "$env:GITHUB_WORKSPACE\scripts\patches\*.patch" "$root\patches"
+          # A hadolint that allows Cabal >= 3.16 must build without the Cabal 3.12 patch.
+          if ($env:HADOLINT_REPO) { Remove-Item "$root\patches\Cabal-3.12.1.0.patch" }
           "ROOT=$root" >> $env:GITHUB_ENV
           "GHC=$((Get-ChildItem "$root\install" -Directory | Select-Object -First 1).FullName)\bin\ghc.exe" >> $env:GITHUB_ENV
           "HSC2HS_ARCHIVE=$((Get-ChildItem 'hsc2hs-*.tar.gz').FullName)" >> $env:GITHUB_ENV
@@ -84,11 +101,14 @@ jobs:
         shell: pwsh
         env:
           PACKAGES: ${{ inputs.packages || 'ShellCheck-0.11.0 hadolint-2.15.1' }}
+          HADOLINT_REPO: ${{ inputs.hadolint-repo }}
         run: |
           $failed = @()
           foreach ($pkg in $env:PACKAGES.Split(' ', [StringSplitOptions]::RemoveEmptyEntries)) {
             "::group::$pkg"
-            ./scripts/install-package-on-host.ps1 -Package $pkg -Test -Jobs 4
+            $source = @{}
+            if ($env:HADOLINT_REPO -and $pkg -like 'hadolint-*') { $source.SourceDir = "$env:GITHUB_WORKSPACE\hadolint-src" }
+            ./scripts/install-package-on-host.ps1 -Package $pkg @source -Test -Jobs 4
             if ($LASTEXITCODE -ne 0) { $failed += $pkg }
             "::endgroup::"
           }
