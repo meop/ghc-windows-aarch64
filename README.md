@@ -12,53 +12,69 @@ relocatable bindist with llvm-mingw's Windows AArch64 toolchain bundled as
 
 The release notes give the GHC commit each build comes from.
 
-### Current: `ghc-10.1.20261114-9b46c83fd6`
+### Current: `ghc-10.1.20261114-02693d8b17`
 
 A prerelease for GHC developers, built by cross-compiling from x86_64 Linux
-(the `validate` flavour, native bignum, the native code generator,
-tables-next-to-code off, library haddocks included). The source is GHC master
+(the `validate` flavour, native bignum, the native code generator, library
+haddocks included), with **tables-next-to-code on**. The source is GHC master
 `13408a2b59` plus
 [!16979](https://gitlab.haskell.org/ghc/ghc/-/merge_requests/16979) (Support
 building and testing GHC natively on Windows AArch64, by Nithin Aashik), plus
-five test-side commits that touch only the test driver and one test's
-assembly file:
+our test-side commits, plus commits that turn tables-next-to-code on
+([#25979](https://gitlab.haskell.org/ghc/ghc/-/issues/25979)):
 
-- `testsuite: pass {top} to commands with forward slashes`
-- `testsuite: write TOP into the test Makefile with forward slashes`
-- `testsuite driver: keep ${pkgroot} entries off PATH on Windows`
-- `testsuite: don't read config.top as a regex replacement template`
-- `testsuite CallConv: enter the pushed return address per the no-TNTC
-  convention`
+- the three removals of draft
+  [!15346](https://gitlab.haskell.org/ghc/ghc/-/merge_requests/15346) (Cheng
+  Shao) in configure, ghc-toolchain and the driver;
+- an RTS header fix that tables-next-to-code needs on this target
+  (`OFFSET_FIELD` in `InfoTables.h`), and its regression test
+  `rts/papLargeBitmap`.
 
-The compiler, RTS linker and RTS code are !16979's. The test-side commits are
-on branches of [meop/ghc](https://github.com/meop/ghc). The assembled source
-commit is not published, because it carries the MR's commits.
+The release notes have the details. The compiler, RTS linker and RTS code are
+!16979's. Our commits are on branches of [meop/ghc](https://github.com/meop/ghc)
+(`windows-aarch64-tntc` for the tables-next-to-code commits), and the parts that
+stand on their own are upstream MRs. The assembled source commit is not
+published as a branch, because it carries the MR's commits; its tree is the
+`ghc-src-02693d8b17.tar.gz` asset.
 
 Assets, each with a `.sha256` file:
 
 - `ghc-10.1.20261114-aarch64-unknown-mingw32.tar.gz`: the bindist.
-- `ghc-src-9b46c83fd6.tar.gz`: `git archive` of the source commit
+- `ghc-src-02693d8b17.tar.gz`: `git archive` of the source commit
   (submodules not included; their commits are pinned in the tree).
-- `testsuite-9b46c83fd6-libs.tar.gz`: the matching test tree, with the tests
+- `testsuite-02693d8b17-libs.tar.gz`: the matching test tree, with the tests
   in `libraries/*/tests`.
-- `testsuite-tools-074195374c.zip`: the five prebuilt AArch64 test tools
+- `testsuite-tools-02693d8b17.zip`: the prebuilt AArch64 test tools
   (`check-ppr`, `check-exact`, `dump-decls`, `count-deps`, `changelog-d`)
-  that the testsuite calls. They were built with the compiler of the
-  previous commit, which differs from this one only in a test file.
+  that the testsuite calls, built with this compiler.
 - `hsc2hs-0ac065c.tar.gz`: GHC's in-tree hsc2hs. The Hackage release of
   hsc2hs does not yet support Windows AArch64.
 
 **Testsuite result.** GHC's full testsuite at speed 1 (`-Speed 1 -Threads 3`),
 run natively on Windows 11 ARM64 against this exact bindist with the test tree
-and tools above: 11485 tests (the same set as the x86_64 Windows CI job),
-11796 expected passes, 142 expected failures, 0 unexpected failures,
-0 unexpected passes, 0 framework failures, 39 fragile. It took 2 h 44 min.
+and tools above, in one run of this repository's `test-testsuite` workflow:
+11486 tests, 11801 expected passes, 141 expected failures, 0 unexpected
+failures, 0 unexpected passes, 0 framework failures, 39 fragile. It took
+1 h 51 min.
 
-Known gaps: the code generator still needs workarounds (tables-next-to-code
-off, large address space off, among others), and their effect has not been
-measured. C++ exceptions work but print `libunwind: pc not in table`. T9405
-fails under MSYS2 only, because MSYS2's `kill -INT` has no ARM64 helper and
-falls back to `TerminateProcess`.
+**Packages.** cabal-install, ShellCheck and hadolint build with it natively and
+pass their own test suites (`test-packages`), with the patches in
+`scripts/patches/`.
+
+Known gaps: C++ exceptions work but print `libunwind: pc not in table`, and a
+C++ exception that crosses a Haskell frame ends the process (GHC emits no
+Windows unwind data, on x86_64 too). T9405 fails under MSYS2 only, because
+MSYS2's `kill -INT` has no ARM64 helper and falls back to `TerminateProcess`.
+No LLVM backend, no dynamic Haskell libraries. The performance effect of
+tables-next-to-code has not been measured.
+
+Problems and results from other machines are welcome as issues here.
+
+### Reference: `ghc-10.1.20261114-9b46c83fd6`
+
+The same source without the tables-next-to-code commits (tables-next-to-code
+off), kept to compare against: 11485 tests, 11796 expected passes, 142 expected
+failures, 0 unexpected, in a full run on a 4 vCPU Windows 11 ARM64 VM.
 
 ### Earlier releases
 
@@ -93,16 +109,15 @@ current release's linker is !16979's, not this branch's.
   ShellCheck and hadolint). It also runs when a release is published.
 
 - `test-testsuite.yml` (manual): runs GHC's own testsuite with the make
-  driver against a release's GHC, from the source tree it was built from (the
-  release's `ghc-src-<commit>.tar.gz`). The fast speed takes about 2.5 hours.
-  It does not use the release's test tree and tools, and its runner script is
-  older than the one that produced the result above, so it does not reproduce
-  that result.
+  driver against a release's GHC, with the release's own test tree and test
+  tools. The current release's result above is one run of it (speed 1, 3
+  threads, 1 h 51 min).
 
 The scripts in `scripts/` are copies from the GHC branch's
-`windows-aarch64/` directory, which is where they are maintained. They are
-not all current: `scripts/testsuite-on-host.ps1` is older than the branch's
-runner. Releases also carry the hsc2hs source from GHC's tree: the Hackage
+`windows-aarch64/` directory, which is where they are maintained. The
+testsuite runner and the cabal build script are the same as the branch's;
+`install-package-on-host.ps1` here also takes `-SourceDir` (build a package
+from a checkout). Releases also carry the hsc2hs source from GHC's tree: the Hackage
 release of hsc2hs does not yet support Windows AArch64. `scripts/patches/`
 holds the package patches the build needs, with the reason in each.
 
